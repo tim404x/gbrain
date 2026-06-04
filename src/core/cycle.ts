@@ -1939,11 +1939,17 @@ export async function runCycle(
   //   - engine is null (no-DB path)
   //   - status is 'failed' or 'skipped' (don't mark a non-run as fresh)
   //   - dryRun (writes are out of scope)
+  //   - FM5: this was a PARTIAL run (a --phase subset, e.g. the auto-update
+  //     cron's `dream --phase extract` smoke test). A single-phase run is NOT
+  //     a full cycle and must never stamp full-cycle freshness, or
+  //     cycle_freshness would report "fresh" while real enrichment phases
+  //     never ran. `opts.phases === undefined` == full ALL_PHASES run.
   //
   // Best-effort: a write failure does NOT change the CycleReport status.
   // The cost of writing the wrong timestamp post-failure is higher than
   // the cost of missing a successful write (next cycle will redo work).
-  if (opts.sourceId && engine && !dryRun && (status === 'ok' || status === 'clean' || status === 'partial')) {
+  const ranFullCycle = opts.phases === undefined;
+  if (opts.sourceId && engine && !dryRun && ranFullCycle && (status === 'ok' || status === 'clean' || status === 'partial')) {
     try {
       await engine.updateSourceConfig(opts.sourceId, {
         last_full_cycle_at: new Date().toISOString(),

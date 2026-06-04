@@ -54,6 +54,14 @@ interface DreamArgs {
    * Never auto-applied for --input (codex finding #3).
    */
   bypassDreamGuard: boolean;
+  /**
+   * v0.41.x (FM5): explicit source to scope the cycle to. When set, runCycle
+   * writes `last_full_cycle_at` to that source, which doctor's per-source
+   * cycle_freshness check reads. When unset, runDream auto-resolves the lone
+   * non-archived source (single-source brains — the common case). Multi-source
+   * brains MUST pass --source explicitly; we never guess across >1 source.
+   */
+  sourceId: string | null;
 }
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -110,6 +118,9 @@ function parseArgs(args: string[]): DreamArgs {
   // --input implies --phase synthesize.
   if (inputFile && !phase) phase = 'synthesize';
 
+  const sourceIdx = args.indexOf('--source');
+  const sourceId = sourceIdx !== -1 ? args[sourceIdx + 1] ?? null : null;
+
   return {
     json: args.includes('--json'),
     dryRun: args.includes('--dry-run'),
@@ -122,6 +133,7 @@ function parseArgs(args: string[]): DreamArgs {
     from,
     to,
     bypassDreamGuard: args.includes('--unsafe-bypass-dream-guard'),
+    sourceId,
   };
 }
 
@@ -278,11 +290,30 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
   const brainDir = await resolveBrainDir(engine, opts.dir);
   const phases: CyclePhase[] | undefined = opts.phase ? [opts.phase] : undefined;
 
+  // FM5: resolve which source this cycle is scoped to so runCycle can write
+  // `last_full_cycle_at` (doctor's cycle_freshness reads it per-source).
+  // - explicit --source wins.
+  // - otherwise auto-resolve the lone non-archived source (single-source
+  //   brains, the common case). We do NOT guess across >1 source — a
+  //   multi-source brain must pass --source or the timestamp stays unwritten
+  //   (same as legacy behavior, no regression).
+  let resolvedSourceId: string | undefined = opts.sourceId ?? undefined;
+  if (!resolvedSourceId && engine) {
+    try {
+      const sources = await engine.listAllSources({ includeArchived: false });
+      if (sources.length === 1) resolvedSourceId = sources[0].id;
+    } catch {
+      // listAllSources unavailable (e.g. pre-v0.38 schema) — proceed without
+      // a sourceId; the cycle still runs, just won't stamp freshness.
+    }
+  }
+
   const report = await runCycle(engine, {
     brainDir,
     dryRun: opts.dryRun,
     pull: opts.pull,
     phases,
+    sourceId: resolvedSourceId,
     synthInputFile: opts.inputFile ?? undefined,
     synthDate: opts.date ?? undefined,
     synthFrom: opts.from ?? undefined,

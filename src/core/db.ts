@@ -159,6 +159,16 @@ export function getConnection(): ReturnType<typeof postgres> {
   return sql;
 }
 
+/**
+ * Predicate: is the module-level singleton already connected?
+ * Lets an engine detect whether it CREATES the singleton vs ATTACHES to one
+ * another engine already created, so disconnect() never clobbers the owner's
+ * connection. See PostgresEngine.connect()/'module-attached' style.
+ */
+export function isConnected(): boolean {
+  return sql !== null;
+}
+
 export async function connect(config: EngineConfig): Promise<void> {
   if (sql) {
     // Warn if a different URL is passed — the old connection is still in use

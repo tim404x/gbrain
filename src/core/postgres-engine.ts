@@ -99,7 +99,7 @@ export class PostgresEngine implements BrainEngine {
    * disconnect() on an instance-pool engine would fall through to
    * db.disconnect() and clobber the unrelated module-level connection.
    */
-  private _connectionStyle: 'instance' | 'module' | null = null;
+  private _connectionStyle: 'instance' | 'module' | 'module-attached' | null = null;
 
   /**
    * v0.30.1 (Fix 1 + X1 + T5): instance-owned ConnectionManager.
@@ -173,9 +173,18 @@ export class PostgresEngine implements BrainEngine {
       });
       this.connectionManager.setReadPool(this._sql);
     } else {
-      // Module-level singleton (backward compat for CLI main engine)
+      // Module-level singleton (backward compat for CLI main engine).
+      // Detect whether THIS engine creates the singleton vs attaches to one
+      // another engine already created. If db.isConnected() is true before
+      // db.connect() (which is a no-op when `sql` is already set), we are a
+      // GUEST, not the owner — disconnect() must leave the module-level `sql`
+      // alone. Without this, a transient engine (e.g. lint's content_sanity
+      // probe) spun up inside a running dream cycle would tear down the parent
+      // cycle's connection in its finally block ("No database connection:
+      // connect() has not been called" mid-cycle, 13 link rows lost).
+      const alreadyConnected = db.isConnected();
       await db.connect(config);
-      this._connectionStyle = 'module';
+      this._connectionStyle = alreadyConnected ? 'module-attached' : 'module';
 
       // v0.30.1: connection-manager wraps the module singleton.
       if (url) {
@@ -205,6 +214,11 @@ export class PostgresEngine implements BrainEngine {
     }
     if (this._connectionStyle === 'module') {
       await db.disconnect();
+      this._connectionStyle = null;
+    } else if (this._connectionStyle === 'module-attached') {
+      // Guest: another engine owns the module singleton. Clear our own state
+      // but leave db.ts's `sql` alone — calling db.disconnect() here would
+      // clobber the owner's live connection mid-cycle.
       this._connectionStyle = null;
     }
     // else: nothing to disconnect (already done or never connected)
